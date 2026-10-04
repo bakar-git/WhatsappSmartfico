@@ -184,3 +184,14 @@ go build ./...
 
 API and worker tests use a fake WhatsApp transport and never send real messages.
 Actual phone pairing and delivery require scanning the terminal QR with your account.
+
+
+
+mkdir -p dist/windows-amd64
+
+CGO_ENABLED=1 \
+GOOS=windows \
+GOARCH=amd64 \
+CC=x86_64-w64-mingw32-gcc \
+go build -trimpath -ldflags="-s -w" \
+  -o dist/windows-amd64/smartfico-whatsapp.exe .

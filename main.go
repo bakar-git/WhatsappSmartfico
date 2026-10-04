@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -117,7 +116,7 @@ func run() error {
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	dsn := (&url.URL{Scheme: "file", Path: filepath.Join(dir, "whatsapp.db")}).String() + "?_foreign_keys=on&_busy_timeout=5000&_journal_mode=WAL"
+	dsn := sqliteDSN(filepath.Join(dir, "whatsapp.db"))
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return err
