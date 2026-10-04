@@ -24,6 +24,9 @@ type fakeTransport struct {
 
 func (f *fakeTransport) IsConnected() bool { return f.ready }
 func (f *fakeTransport) IsLoggedIn() bool  { return f.ready }
+func (f *fakeTransport) Upload(_ context.Context, data []byte, _ whatsmeow.MediaType) (whatsmeow.UploadResponse, error) {
+	return whatsmeow.UploadResponse{URL: "https://example.invalid/media", DirectPath: "/media", MediaKey: []byte("key"), FileSHA256: []byte("plain"), FileEncSHA256: []byte("encrypted"), FileLength: uint64(len(data))}, nil
+}
 func (f *fakeTransport) SendMessage(_ context.Context, to types.JID, msg *waE2E.Message, _ ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error) {
 	f.sent <- to.String() + ":" + msg.GetConversation()
 	return whatsmeow.SendResponse{ID: "test-wa-id"}, nil

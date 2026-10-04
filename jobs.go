@@ -11,18 +11,21 @@ import (
 	"unicode/utf8"
 
 	antiban "github.com/TA-rathnayaka/whatsmeow-antiban"
-	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
-	"google.golang.org/protobuf/proto"
 )
 
 type job struct {
-	ID        string `json:"id"`
-	Number    string `json:"number"`
-	Message   string `json:"message"`
-	Status    string `json:"status"`
-	MessageID string `json:"message_id,omitempty"`
-	Error     string `json:"error,omitempty"`
+	ID          string `json:"id"`
+	Number      string `json:"number"`
+	Message     string `json:"message,omitempty"`
+	Type        string `json:"type"`
+	Filename    string `json:"filename,omitempty"`
+	MimeType    string `json:"mime_type,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+	ContentHash string `json:"-"`
+	Status      string `json:"status"`
+	MessageID   string `json:"message_id,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 func initJobs(db *sql.DB) error {
@@ -32,15 +35,32 @@ CREATE TABLE IF NOT EXISTS jobs (
  status TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
  created_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status, created_at);
+CREATE TABLE IF NOT EXISTS job_media (
+ job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+ type TEXT NOT NULL, filename TEXT NOT NULL, mime_type TEXT NOT NULL,
+ file_size INTEGER NOT NULL, data BLOB NOT NULL, content_hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS send_attempts (recipient TEXT NOT NULL, content_hash TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
-UPDATE jobs SET status='unknown', error='Server stopped during send; delivery is unknown. Check WhatsApp before resending.' WHERE status='sending';`)
+UPDATE jobs SET status='unknown', error='Server stopped during send; delivery is unknown. Check WhatsApp before resending.' WHERE status='sending';
+UPDATE job_media SET data=x'' WHERE job_id IN (SELECT id FROM jobs WHERE status NOT IN ('queued','sending'));`)
 	return err
+}
+
+const jobSelect = `SELECT j.id,j.number,j.message,j.status,j.message_id,j.error,
+COALESCE(m.type,'text'),COALESCE(m.filename,''),COALESCE(m.mime_type,''),COALESCE(m.file_size,0),COALESCE(m.content_hash,'')
+FROM jobs j LEFT JOIN job_media m ON m.job_id=j.id`
+
+func readJob(row *sql.Row) (job, error) {
+	var j job
+	err := row.Scan(&j.ID, &j.Number, &j.Message, &j.Status, &j.MessageID, &j.Error,
+		&j.Type, &j.Filename, &j.MimeType, &j.Size, &j.ContentHash)
+	return j, err
 }
 
 // Only one worker sends, so concurrent HTTP requests cannot overshoot the
 // limiter between GetDelay and Record. SQLite keeps jobs and limits over restarts.
 func (a *app) work(ctx context.Context) {
+	defer a.setWorkerRunning(false)
 	preset := antiban.Resolve("conservative")
 	limiter := antiban.NewRateLimiter(preset, time.Now().UnixNano())
 	if _, err := a.db.Exec(`INSERT OR IGNORE INTO settings(key,value) VALUES('warmup_start',?)`, time.Now().UnixMilli()); err != nil {
@@ -81,6 +101,7 @@ func (a *app) work(ctx context.Context) {
 		log.Print(err)
 		return
 	}
+	a.setWorkerRunning(true)
 	for ctx.Err() == nil {
 		if !a.client.IsConnected() || !a.client.IsLoggedIn() {
 			if !wait(ctx, time.Second) {
@@ -88,8 +109,7 @@ func (a *app) work(ctx context.Context) {
 			}
 			continue
 		}
-		var j job
-		err := a.db.QueryRow(`SELECT id,number,message FROM jobs WHERE status='queued' ORDER BY created_at,rowid LIMIT 1`).Scan(&j.ID, &j.Number, &j.Message)
+		j, err := readJob(a.db.QueryRow(jobSelect + ` WHERE j.status='queued' ORDER BY j.created_at,j.rowid LIMIT 1`))
 		if errors.Is(err, sql.ErrNoRows) {
 			if !wait(ctx, 250*time.Millisecond) {
 				return
@@ -105,6 +125,9 @@ func (a *app) work(ctx context.Context) {
 		}
 		recipient := types.NewJID(j.Number[1:], types.DefaultUserServer)
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(j.Message)))
+		if j.ContentHash != "" {
+			hash = j.ContentHash
+		}
 		now := time.Now()
 		warmup.MaybeReset(now)
 		delay := limiter.GetDelay(recipient.String(), hash, !known[recipient.String()], utf8.RuneCountInString(j.Message), now)
@@ -142,8 +165,19 @@ func (a *app) work(ctx context.Context) {
 		limiter.Record(recipient.String(), hash, attemptTime)
 		warmup.Record(attemptTime)
 		known[recipient.String()] = true
-		sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		response, err := a.client.SendMessage(sendCtx, recipient, &waE2E.Message{Conversation: proto.String(j.Message)})
+		timeout := 30 * time.Second
+		if j.Type != "text" {
+			timeout = 90 * time.Second
+		}
+		sendCtx, cancel := context.WithTimeout(ctx, timeout)
+		message, err := a.prepareMessage(sendCtx, j)
+		if err != nil {
+			cancel()
+			log.Printf("Prepare media job %s: %v", j.ID, err)
+			a.finish(j.ID, "failed", "", "Attachment could not be prepared or uploaded; no message was sent.")
+			continue
+		}
+		response, err := a.client.SendMessage(sendCtx, recipient, message)
 		cancel()
 		if err != nil {
 			log.Printf("Send job %s: %v", j.ID, err)
@@ -155,7 +189,20 @@ func (a *app) work(ctx context.Context) {
 }
 
 func (a *app) finish(id, status, messageID, detail string) {
-	if _, err := a.db.Exec(`UPDATE jobs SET status=?, message_id=?, error=? WHERE id=?`, status, messageID, detail, id); err != nil {
+	tx, err := a.db.Begin()
+	if err != nil {
+		log.Printf("Save job %s: %v", id, err)
+		return
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`UPDATE jobs SET status=?, message_id=?, error=? WHERE id=?`, status, messageID, detail, id)
+	if err == nil {
+		_, err = tx.Exec(`UPDATE job_media SET data=x'' WHERE job_id=?`, id)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
 		log.Printf("Save job %s: %v", id, err)
 	}
 }

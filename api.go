@@ -1,10 +1,9 @@
 package main
 
 import (
-	"crypto/rand"
+	"context"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,12 +20,18 @@ var phonePattern = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", a.status)
+	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("POST /api/messages", a.enqueue)
+	mux.HandleFunc("POST /api/message", a.enqueue)
+	mux.HandleFunc("POST /api/documents", a.enqueueMedia)
 	mux.HandleFunc("GET /api/messages/{id}", a.getJob)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
+		if !cors(w, r) {
+			return
+		}
 		if a.token != "" {
 			provided := ""
 			if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
@@ -58,8 +63,32 @@ func (a *app) status(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *app) health(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	databaseOK := a.db.PingContext(ctx) == nil
+	connected, loggedIn := a.client.IsConnected(), a.client.IsLoggedIn()
+	a.mu.RLock()
+	workerRunning, status := a.workerRunning, a.loginStatus
+	a.mu.RUnlock()
+	ready := databaseOK && connected && loggedIn && workerRunning
+	code := http.StatusOK
+	if !ready {
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, map[string]any{
+		"service": "smartfico-whatsapp", "api_running": true, "ready": ready,
+		"database_ok": databaseOK, "worker_running": workerRunning,
+		"connected": connected, "logged_in": loggedIn, "status": status,
+	})
+}
+
 func (a *app) enqueue(w http.ResponseWriter, r *http.Request) {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err == nil && mediaType == "multipart/form-data" {
+		a.enqueueMedia(w, r)
+		return
+	}
 	if err != nil || mediaType != "application/json" {
 		writeJSON(w, 415, map[string]string{"error": "Content-Type must be application/json"})
 		return
@@ -92,34 +121,11 @@ func (a *app) enqueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 503, map[string]string{"error": "WhatsApp is not connected; scan the QR code in the server console"})
 		return
 	}
-	idBytes := make([]byte, 16)
-	if _, err := rand.Read(idBytes); err != nil {
-		writeJSON(w, 500, map[string]string{"error": "Could not create job"})
-		return
-	}
-	j := job{ID: hex.EncodeToString(idBytes), Number: request.Number, Message: request.Message, Status: "queued"}
-	result, err := a.db.ExecContext(r.Context(), `INSERT INTO jobs(id,number,message,status,created_at)
-SELECT ?,?,?,?,? WHERE (SELECT COUNT(*) FROM jobs WHERE status IN ('queued','sending')) < 1000`, j.ID, j.Number, j.Message, j.Status, time.Now().UnixMilli())
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "Could not queue message"})
-		return
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "Could not confirm queued message"})
-		return
-	}
-	if count == 0 {
-		writeJSON(w, 429, map[string]string{"error": "Message queue is full"})
-		return
-	}
-	w.Header().Set("Location", "/api/messages/"+j.ID)
-	writeJSON(w, http.StatusAccepted, j)
+	a.queue(w, r, job{Number: request.Number, Message: request.Message, Type: "text"}, nil)
 }
 
 func (a *app) getJob(w http.ResponseWriter, r *http.Request) {
-	var j job
-	err := a.db.QueryRowContext(r.Context(), `SELECT id,number,message,status,message_id,error FROM jobs WHERE id=?`, r.PathValue("id")).Scan(&j.ID, &j.Number, &j.Message, &j.Status, &j.MessageID, &j.Error)
+	j, err := readJob(a.db.QueryRowContext(r.Context(), jobSelect+` WHERE j.id=?`, r.PathValue("id")))
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, 404, map[string]string{"error": "Message job not found"})
 		return

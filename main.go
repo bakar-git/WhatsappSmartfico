@@ -31,15 +31,17 @@ import (
 type transport interface {
 	IsConnected() bool
 	IsLoggedIn() bool
+	Upload(context.Context, []byte, whatsmeow.MediaType) (whatsmeow.UploadResponse, error)
 	SendMessage(context.Context, types.JID, *waE2E.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
 }
 
 type app struct {
-	db          *sql.DB
-	client      transport
-	token       string
-	mu          sync.RWMutex
-	loginStatus string
+	db            *sql.DB
+	client        transport
+	token         string
+	mu            sync.RWMutex
+	loginStatus   string
+	workerRunning bool
 }
 
 func env(key, fallback string) string {
@@ -56,6 +58,18 @@ func main() {
 }
 
 func run() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	configDir, err := loadDotEnv(executable, workingDir)
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	address := env("HTTP_ADDR", "127.0.0.1:8080")
@@ -67,7 +81,11 @@ func run() error {
 	if ip := net.ParseIP(host); (ip == nil || !ip.IsLoopback()) && token == "" {
 		return errors.New("set API_TOKEN when listening outside loopback")
 	}
-	dir, err := filepath.Abs(env("DATA_DIR", "data"))
+	dataDir := env("DATA_DIR", "data")
+	if !filepath.IsAbs(dataDir) {
+		dataDir = filepath.Join(configDir, dataDir)
+	}
+	dir, err := filepath.Abs(dataDir)
 	if err != nil {
 		return err
 	}
@@ -114,7 +132,7 @@ func run() error {
 		return err
 	}
 	defer listener.Close()
-	server := &http.Server{Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Handler: a.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second}
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.Serve(listener) }()
 	log.Printf("HTTP API listening on http://%s", address)

@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/TA-rathnayaka/whatsmeow-antiban v0.1.0
+	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20260929112325-8b41cfe6d9c4

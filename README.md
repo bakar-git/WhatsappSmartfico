@@ -1,6 +1,6 @@
 # Smartfico WhatsApp
 
-A Go HTTP API for sending text messages using a linked WhatsApp account.
+A Go HTTP API for sending text messages, PDF receipts, and JPEG/PNG images using a linked WhatsApp account.
 On first start, scan the **QR code printed in the terminal** from WhatsApp →
 Linked devices → Link a device. The session is saved in `data/whatsapp.db`;
 later starts reconnect without a QR. Expired pairing codes refresh automatically.
@@ -26,6 +26,41 @@ Optional environment variables:
 | `DATA_DIR` | `data` | Session, message jobs, and send history |
 | `API_TOKEN` | unset | Require `Authorization: Bearer <token>` on all endpoints |
 
+You can also put these settings in a `.env` file. Start with:
+
+```sh
+cp .env.example .env
+```
+
+```dotenv
+HTTP_ADDR=127.0.0.1:8080
+DATA_DIR=data
+API_TOKEN=your-per-installation-secret
+```
+
+For a built app, place `.env` beside the executable:
+
+```text
+whatsapp-service/
+  smartfico-whatsapp
+  .env
+  data/
+```
+
+```sh
+go build -o smartfico-whatsapp .
+./smartfico-whatsapp
+```
+
+The app loads `.env` beside the executable first, even when launched from another
+working directory. If that file is absent, it looks in the working directory,
+which supports `go run .`. It reads only the first file found; existing process
+environment variables take precedence, including values explicitly set empty.
+Relative `DATA_DIR` paths resolve beside the loaded `.env`; without a file they
+resolve from the working directory. A missing `.env` is optional; malformed or
+unreadable files stop startup. Restart after editing settings; rebuilding is not
+required. `.env` is ignored by Git and is not embedded in the binary.
+
 An API token is required if listening outside loopback. For example:
 
 ```sh
@@ -42,8 +77,11 @@ curl -X POST http://127.0.0.1:8080/api/messages \
 
 If `API_TOKEN` is set, also pass `-H "Authorization: Bearer $API_TOKEN"`.
 Use the full international number, with a leading `+` and no spaces or hyphens.
-The message limit is 4096 characters. Only text is implemented in this version;
-receipt PDFs, images, and other uploads can be added later.
+The message limit is 4096 characters. For PDF/image blobs, use multipart uploads
+with `number`, `type=pdf` or `type=image`, `file`, and optional `caption`.
+Files can be up to 16 MiB. See [API.md](API.md) for all endpoints, browser JS,
+upload examples, authentication, and CORS behavior for `*.smartfico.test` and
+`*.smartfico.app`.
 
 The response is **202 Accepted**, which means queued, not delivered:
 
@@ -56,6 +94,7 @@ Check the result:
 ```sh
 curl http://127.0.0.1:8080/api/messages/<job-id>
 curl http://127.0.0.1:8080/api/status
+curl http://127.0.0.1:8080/api/health
 ```
 
 | Job status | Meaning |
@@ -64,13 +103,15 @@ curl http://127.0.0.1:8080/api/status
 | `sending` | WhatsApp send is in progress |
 | `sent` | WhatsApp acknowledged the send; includes `message_id`. This does not mean delivered or read. |
 | `blocked` | Rate or warm-up limit reached; no message was sent |
+| `failed` | Attachment preparation/upload failed; no message was sent |
 | `unknown` | Send failed/timed out, or the process stopped during sending; verify in WhatsApp before resending |
 
 Validation errors return 400, wrong content type 415, missing authentication 401,
 disconnected WhatsApp 503, and a full queue 429. There can be up to 1000 pending jobs.
 Queued jobs survive restarts and pause during disconnects. Blocked and uncertain
 jobs are not automatically retried, to avoid unexpected or duplicate receipts.
-Job records retain message content in SQLite; manage retention and back up the
+Job records retain message content and metadata in SQLite; attachment bytes are
+cleared after terminal results. Manage retention and back up the
 data directory according to your needs.
 
 ## Library compatibility and pacing
