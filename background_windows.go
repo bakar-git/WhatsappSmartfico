@@ -1,0 +1,15 @@
+package main
+
+import (
+	"os/exec"
+	"syscall"
+
+	"golang.org/x/sys/windows"
+)
+
+func configureDetached(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
+		HideWindow:    true,
+	}
+}

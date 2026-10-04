@@ -21,6 +21,9 @@ Authorization: Bearer <local-installation-token>
 Settings can be supplied through the process environment or a `.env` file beside
 the built executable. See [README.md](README.md) and [.env.example](.env.example).
 Changes to `.env` take effect after restarting the service; no rebuild is needed.
+With `BACKGROUND_ON_CLOSE=true`, closing the launcher's console leaves the local
+service running. To restart after changing settings, stop the service PID printed
+by the launcher first. Only one service instance per OS user can run at a time.
 
 When unset, loopback requests do not require a token. Listening outside loopback
 requires a token. Configure the token per computer in your integration; do not

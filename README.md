@@ -16,7 +16,8 @@ go run .
 ```
 
 The API defaults to `127.0.0.1:8080`. Keep the console open while pairing.
-There is no browser login page. Run one process per data directory/session.
+There is no browser login page. An OS file lock allows one WhatsApp service per
+OS user, even if another launch uses a different port or data directory.
 
 Optional environment variables:
 
@@ -25,6 +26,7 @@ Optional environment variables:
 | `HTTP_ADDR` | `127.0.0.1:8080` | HTTP listen address |
 | `DATA_DIR` | `data` | Session, message jobs, and send history |
 | `API_TOKEN` | unset | Require `Authorization: Bearer <token>` on all endpoints |
+| `BACKGROUND_ON_CLOSE` | `false` | Keep the service running when its console closes |
 
 You can also put these settings in a `.env` file. Start with:
 
@@ -36,6 +38,7 @@ cp .env.example .env
 HTTP_ADDR=127.0.0.1:8080
 DATA_DIR=data
 API_TOKEN=your-per-installation-secret
+BACKGROUND_ON_CLOSE=true
 ```
 
 For a built app, place `.env` beside the executable:
@@ -60,6 +63,37 @@ Relative `DATA_DIR` paths resolve beside the loaded `.env`; without a file they
 resolve from the working directory. A missing `.env` is optional; malformed or
 unreadable files stop startup. Restart after editing settings; rebuilding is not
 required. `.env` is ignored by Git and is not embedded in the binary.
+
+## Keep running after closing the console
+
+Set `BACKGROUND_ON_CLOSE=true` in `.env`, build the app, and launch that binary.
+On Windows, Linux, and macOS, it starts a detached WhatsApp service and displays
+its QR codes/logs in the launcher's console. Closing that console or pressing
+Ctrl+C closes the log viewer; the service continues sending through the API.
+With `BACKGROUND_ON_CLOSE=false`, the app runs in the foreground and Ctrl+C
+stops it normally. Changing the setting requires stopping the existing service
+and starting it again.
+
+This is the background-process fallback; it does not create a tray icon. Windows
+console close events terminate attached processes, so the service runs detached
+from the outset to survive closing the window. See
+[Microsoft's console close documentation](https://learn.microsoft.com/en-us/windows/console/ctrl-close-signal).
+
+The launcher prints the background PID and full log path. Stop that PID through
+Windows Task Manager, macOS Activity Monitor, or `kill -TERM <pid>` on Linux/macOS.
+Reopening the app while it is running reports the existing instance and does not
+start another session. The lock is released by the OS when the service exits,
+including after a crash; do not manually delete its lock file while it is running.
+
+Instance files are under the current user's cache directory in
+`smartfico-whatsapp/`: `instance.lock`, `service.pid`, and (in background mode)
+`service.log`. Pairing QR codes continue to refresh in that log if the viewer is
+closed before pairing. Keep the viewer open until you scan successfully, or read
+the latest log in a terminal. The WhatsApp session/database still use `DATA_DIR`.
+
+Use a **built binary** for this setting; `go run` uses a temporary executable
+and is intended for foreground development. This does not enable launch at boot
+or keep the process alive through logout, shutdown, or explicit process termination.
 
 An API token is required if listening outside loopback. For example:
 

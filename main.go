@@ -70,8 +70,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	background, child, err := backgroundMode(os.Args[1:])
+	if err != nil {
+		return err
+	}
 	address := env("HTTP_ADDR", "127.0.0.1:8080")
 	token := os.Getenv("API_TOKEN")
 	host, _, err := net.SplitHostPort(address)
@@ -81,6 +83,29 @@ func run() error {
 	if ip := net.ParseIP(host); (ip == nil || !ip.IsLoopback()) && token == "" {
 		return errors.New("set API_TOKEN when listening outside loopback")
 	}
+	stateDir, err := instanceDirectory()
+	if err != nil {
+		return err
+	}
+	if background && !child {
+		return launchBackground(executable, workingDir, stateDir)
+	}
+	instance, locked, err := tryInstanceLock(stateDir)
+	if err != nil {
+		return fmt.Errorf("acquire instance lock: %w", err)
+	}
+	if !locked {
+		announceExisting(stateDir)
+		return nil
+	}
+	defer instance.Close()
+	pidPath := filepath.Join(stateDir, "service.pid")
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0600); err != nil {
+		return err
+	}
+	defer os.Remove(pidPath)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	dataDir := env("DATA_DIR", "data")
 	if !filepath.IsAbs(dataDir) {
 		dataDir = filepath.Join(configDir, dataDir)
