@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package built binaries and create the GitHub .release update manifest."""
+"""Package built binaries and create the GitHub default.release update manifest."""
 import argparse
 import hashlib
 import json
@@ -48,7 +48,7 @@ def main():
             "sha256": checksum,
         }
         print(archive_path)
-    manifest_path = args.output / ".release"
+    manifest_path = args.output / "default.release"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(manifest_path)
 

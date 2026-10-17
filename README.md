@@ -29,7 +29,7 @@ Optional environment variables:
 | `BACKGROUND_ON_CLOSE` | `false` | Keep the service running when its console closes |
 | `START_ON_LOGIN` | `true` | Register the installed binary to start at current-user sign-in |
 | `UPDATE_ENABLED` | `true` | Check/download/restart for newer public GitHub releases |
-| `UPDATE_MANIFEST_URL` | GitHub latest `.release` asset | JSON manifest with version, link, and SHA-256 |
+| `UPDATE_MANIFEST_URL` | GitHub latest `default.release` asset | JSON manifest with version, link, and SHA-256 |
 | `UPDATE_CHECK_INTERVAL` | `6h` | Update polling interval, minimum `1m` |
 
 You can also put these settings in a `.env` file. Start with:
@@ -99,7 +99,7 @@ Use a **built binary** for this setting; `go run` uses a temporary executable
 and is intended for foreground development. `START_ON_LOGIN=true` now registers
 the installed binary for the current user's next login. It does not run before
 login or keep the process alive through logout/shutdown. See [UPDATES.md](UPDATES.md)
-for OS behavior, configuration, GitHub `.release` manifests, publishing commands,
+for OS behavior, configuration, GitHub `default.release` manifests, publishing commands,
 checksum validation, and update rollback.
 
 An API token is required if listening outside loopback. For example:

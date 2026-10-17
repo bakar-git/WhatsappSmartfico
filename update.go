@@ -26,7 +26,7 @@ import (
 // Override when building a release: -ldflags="-X main.version=0.3.0".
 var version = "0.3.0"
 
-const defaultManifestURL = "https://github.com/bakar-git/WhatsappSmartfico/releases/latest/download/.release"
+const defaultManifestURL = "https://github.com/bakar-git/WhatsappSmartfico/releases/latest/download/default.release"
 const maxUpdateSize = 128 << 20
 
 type releaseAsset struct {

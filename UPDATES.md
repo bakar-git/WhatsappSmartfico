@@ -21,13 +21,13 @@ Temporary `go run` executables skip registration and updates.
 ```dotenv
 START_ON_LOGIN=true
 UPDATE_ENABLED=true
-UPDATE_MANIFEST_URL=https://github.com/bakar-git/WhatsappSmartfico/releases/latest/download/.release
+UPDATE_MANIFEST_URL=https://github.com/bakar-git/WhatsappSmartfico/releases/latest/download/default.release
 UPDATE_CHECK_INTERVAL=6h
 ```
 
 The service checks once when it starts and then every six hours (configurable,
 minimum one minute). Network/404 errors log a warning and leave the API running.
-Until the first GitHub release contains a `.release` asset, update checks will
+Until the first GitHub release contains a `default.release` asset, update checks will
 report 404. No GitHub credentials or access token are needed for this public URL.
 
 Disable automatic downloads/restarts with `UPDATE_ENABLED=false`. Keep the
@@ -37,9 +37,9 @@ follow redirects, but redirects and downloads must remain HTTPS.
 `--version` prints the installed version without starting or registering the
 service. The version is also returned by `/api/status` and `/api/health`.
 
-## The .release manifest
+## The update manifest
 
-Attach a JSON file named **`.release`** to each published GitHub release. The
+GitHub normalizes filenames that begin with a dot, so the manifest is named `default.release`. Attach this JSON file to each published GitHub release. The
 default URL uses GitHub's latest release asset download, so the app need not
 query GitHub's authenticated REST API. A newer semantic version is required;
 equal/older versions are ignored. Prerelease versions compare using Go's semver
@@ -102,7 +102,7 @@ For Linux/macOS, build natively with CGO enabled and package the binary under
 its matching platform key. Repeat `--asset` to include more platforms in the
 same manifest, for example `--asset linux-amd64=dist/linux-amd64/smartfico-whatsapp`.
 
-The script outputs `dist/release/win-amd64.zip` and `dist/release/.release`
+The script outputs `dist/release/win-amd64.zip` and `dist/release/default.release`
 (plus any other platforms). Each ZIP contains the executable and `.env` from
 `.env.example`, with no private installation token or session database.
 
@@ -112,7 +112,7 @@ the GitHub UI or, if you use GitHub CLI:
 ```sh
 gh release create v0.3.0 --repo bakar-git/WhatsappSmartfico \
   --title 'v0.3.0' --generate-notes \
-  dist/release/.release dist/release/win-amd64.zip
+  dist/release/default.release dist/release/win-amd64.zip
 ```
 
 Include every ZIP referenced in the manifest. Do not reuse an old version for a
