@@ -43,6 +43,10 @@ func (a *app) routes() http.Handler {
 				return
 			}
 		}
+		if r.Method == http.MethodPost && a.updating.Load() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Installing an update; retry after the service restarts"})
+			return
+		}
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -57,6 +61,8 @@ func (a *app) status(w http.ResponseWriter, r *http.Request) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
+		"version":   version,
+		"updating":  a.updating.Load(),
 		"status":    a.loginStatus,
 		"connected": a.client.IsConnected(),
 		"logged_in": a.client.IsLoggedIn(),
@@ -71,13 +77,14 @@ func (a *app) health(w http.ResponseWriter, r *http.Request) {
 	a.mu.RLock()
 	workerRunning, status := a.workerRunning, a.loginStatus
 	a.mu.RUnlock()
-	ready := databaseOK && connected && loggedIn && workerRunning
+	ready := databaseOK && connected && loggedIn && workerRunning && !a.updating.Load()
 	code := http.StatusOK
 	if !ready {
 		code = http.StatusServiceUnavailable
 	}
 	writeJSON(w, code, map[string]any{
 		"service": "smartfico-whatsapp", "api_running": true, "ready": ready,
+		"version": version, "updating": a.updating.Load(),
 		"database_ok": databaseOK, "worker_running": workerRunning,
 		"connected": connected, "logged_in": loggedIn, "status": status,
 	})

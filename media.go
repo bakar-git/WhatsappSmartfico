@@ -154,6 +154,10 @@ func mediaFilename(name, mimeType string) string {
 }
 
 func (a *app) queue(w http.ResponseWriter, r *http.Request, j job, media *attachment) {
+	if a.updating.Load() {
+		writeJSON(w, 503, map[string]string{"error": "Installing an update; retry after the service restarts"})
+		return
+	}
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		writeJSON(w, 500, map[string]string{"error": "Could not create job"})

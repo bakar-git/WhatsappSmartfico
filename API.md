@@ -98,6 +98,11 @@ is stopped, fetch fails with a network error rather than returning health JSON.
 This endpoint does not send a test message or guarantee recipient delivery.
 Antiban limits can still block individual jobs while health reports ready.
 
+Health and status responses also include `version` and `updating`. During an
+automatic update, `updating` is true, health returns 503, and new send requests
+receive 503 until the service restarts. The active send finishes first; queued
+jobs persist. See [UPDATES.md](UPDATES.md) for startup and GitHub update settings.
+
 ```js
 const baseUrl = "http://127.0.0.1:8080";
 // Load this installation's token from your local integration settings.

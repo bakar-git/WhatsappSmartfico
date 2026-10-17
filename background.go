@@ -45,6 +45,9 @@ func backgroundMode(args []string) (enabled, child bool, err error) {
 		return false, false, errors.New("BACKGROUND_ON_CLOSE must be true or false")
 	}
 	for _, arg := range args {
+		if arg == "--startup" {
+			continue
+		}
 		if arg != backgroundChildArgument {
 			return false, false, fmt.Errorf("unknown argument: %s", arg)
 		}
@@ -59,7 +62,7 @@ func announceExisting(dir string) {
 	fmt.Printf("Background log, if enabled: %s\n", filepath.Join(dir, "service.log"))
 }
 
-func launchBackground(executable, workingDir, stateDir string) error {
+func launchBackground(executable, workingDir, stateDir string, follow bool) error {
 	lock, locked, err := tryInstanceLock(stateDir)
 	if err != nil {
 		return err
@@ -88,6 +91,9 @@ func launchBackground(executable, workingDir, stateDir string) error {
 	configureDetached(cmd)
 	if err = cmd.Start(); err != nil {
 		return fmt.Errorf("start background service: %w", err)
+	}
+	if !follow {
+		return cmd.Process.Release()
 	}
 	// The child writes to a file, never to the launcher's terminal or pipes, so
 	// losing this console cannot interrupt a send or the next pairing QR.

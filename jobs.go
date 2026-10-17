@@ -103,87 +103,97 @@ func (a *app) work(ctx context.Context) {
 	}
 	a.setWorkerRunning(true)
 	for ctx.Err() == nil {
-		if !a.client.IsConnected() || !a.client.IsLoggedIn() {
+		if !a.client.IsConnected() || !a.client.IsLoggedIn() || a.updating.Load() {
 			if !wait(ctx, time.Second) {
 				return
 			}
 			continue
 		}
-		j, err := readJob(a.db.QueryRow(jobSelect + ` WHERE j.status='queued' ORDER BY j.created_at,j.rowid LIMIT 1`))
-		if errors.Is(err, sql.ErrNoRows) {
-			if !wait(ctx, 250*time.Millisecond) {
+		func() {
+			a.sendMu.Lock()
+			defer a.sendMu.Unlock()
+			if a.updating.Load() {
 				return
 			}
-			continue
-		}
-		if err != nil {
-			log.Print(err)
-			if !wait(ctx, time.Second) {
+			j, err := readJob(a.db.QueryRow(jobSelect + ` WHERE j.status='queued' ORDER BY j.created_at,j.rowid LIMIT 1`))
+			if errors.Is(err, sql.ErrNoRows) {
+				if !wait(ctx, 250*time.Millisecond) {
+					return
+				}
 				return
 			}
-			continue
-		}
-		recipient := types.NewJID(j.Number[1:], types.DefaultUserServer)
-		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(j.Message)))
-		if j.ContentHash != "" {
-			hash = j.ContentHash
-		}
-		now := time.Now()
-		warmup.MaybeReset(now)
-		delay := limiter.GetDelay(recipient.String(), hash, !known[recipient.String()], utf8.RuneCountInString(j.Message), now)
-		if !warmup.Allowed(now) || delay < 0 {
-			a.finish(j.ID, "blocked", "", "Antiban rate or warm-up limit reached; message was not sent.")
-			continue
-		}
-		if !wait(ctx, time.Duration(delay)*time.Millisecond) {
-			return
-		}
-		if !a.client.IsConnected() || !a.client.IsLoggedIn() {
-			continue
-		}
-		// Commit the attempt before touching the network. In-flight sends become
-		// unknown after a crash rather than being retried and duplicating receipts.
-		tx, err := a.db.Begin()
-		if err != nil {
-			log.Print(err)
-			return
-		}
-		_, err = tx.Exec(`UPDATE jobs SET status='sending' WHERE id=?`, j.ID)
-		attemptTime := time.Now()
-		if err == nil {
-			_, err = tx.Exec(`INSERT INTO send_attempts VALUES(?,?,?)`, recipient.String(), hash, attemptTime.UnixMilli())
-		}
-		if err != nil {
-			_ = tx.Rollback()
-			log.Print(err)
-			return
-		}
-		if err = tx.Commit(); err != nil {
-			log.Print(err)
-			return
-		}
-		limiter.Record(recipient.String(), hash, attemptTime)
-		warmup.Record(attemptTime)
-		known[recipient.String()] = true
-		timeout := 30 * time.Second
-		if j.Type != "text" {
-			timeout = 90 * time.Second
-		}
-		sendCtx, cancel := context.WithTimeout(ctx, timeout)
-		message, err := a.prepareMessage(sendCtx, j)
-		if err != nil {
+			if err != nil {
+				log.Print(err)
+				if !wait(ctx, time.Second) {
+					return
+				}
+				return
+			}
+			recipient := types.NewJID(j.Number[1:], types.DefaultUserServer)
+			hash := fmt.Sprintf("%x", sha256.Sum256([]byte(j.Message)))
+			if j.ContentHash != "" {
+				hash = j.ContentHash
+			}
+			now := time.Now()
+			warmup.MaybeReset(now)
+			delay := limiter.GetDelay(recipient.String(), hash, !known[recipient.String()], utf8.RuneCountInString(j.Message), now)
+			if !warmup.Allowed(now) || delay < 0 {
+				a.finish(j.ID, "blocked", "", "Antiban rate or warm-up limit reached; message was not sent.")
+				return
+			}
+			if !wait(ctx, time.Duration(delay)*time.Millisecond) {
+				return
+			}
+			if !a.client.IsConnected() || !a.client.IsLoggedIn() || a.updating.Load() {
+				return
+			}
+			// Commit the attempt before touching the network. In-flight sends become
+			// unknown after a crash rather than being retried and duplicating receipts.
+			tx, err := a.db.Begin()
+			if err != nil {
+				log.Print(err)
+				return
+			}
+			_, err = tx.Exec(`UPDATE jobs SET status='sending' WHERE id=?`, j.ID)
+			attemptTime := time.Now()
+			if err == nil {
+				_, err = tx.Exec(`INSERT INTO send_attempts VALUES(?,?,?)`, recipient.String(), hash, attemptTime.UnixMilli())
+			}
+			if err != nil {
+				_ = tx.Rollback()
+				log.Print(err)
+				return
+			}
+			if err = tx.Commit(); err != nil {
+				log.Print(err)
+				return
+			}
+			limiter.Record(recipient.String(), hash, attemptTime)
+			warmup.Record(attemptTime)
+			known[recipient.String()] = true
+			timeout := 30 * time.Second
+			if j.Type != "text" {
+				timeout = 90 * time.Second
+			}
+			sendCtx, cancel := context.WithTimeout(ctx, timeout)
+			message, err := a.prepareMessage(sendCtx, j)
+			if err != nil {
+				cancel()
+				log.Printf("Prepare media job %s: %v", j.ID, err)
+				a.finish(j.ID, "failed", "", "Attachment could not be prepared or uploaded; no message was sent.")
+				return
+			}
+			response, err := a.client.SendMessage(sendCtx, recipient, message)
 			cancel()
-			log.Printf("Prepare media job %s: %v", j.ID, err)
-			a.finish(j.ID, "failed", "", "Attachment could not be prepared or uploaded; no message was sent.")
-			continue
-		}
-		response, err := a.client.SendMessage(sendCtx, recipient, message)
-		cancel()
-		if err != nil {
-			log.Printf("Send job %s: %v", j.ID, err)
-			a.finish(j.ID, "unknown", "", "Send failed or timed out; delivery is uncertain. Check WhatsApp before resending.")
-		} else {
-			a.finish(j.ID, "sent", response.ID, "")
+			if err != nil {
+				log.Printf("Send job %s: %v", j.ID, err)
+				a.finish(j.ID, "unknown", "", "Send failed or timed out; delivery is uncertain. Check WhatsApp before resending.")
+			} else {
+				a.finish(j.ID, "sent", response.ID, "")
+			}
+		}()
+		if !wait(ctx, 50*time.Millisecond) {
+			return
 		}
 	}
 }

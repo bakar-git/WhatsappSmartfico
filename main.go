@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,6 +43,8 @@ type app struct {
 	mu            sync.RWMutex
 	loginStatus   string
 	workerRunning bool
+	sendMu        sync.Mutex
+	updating      atomic.Bool
 }
 
 func env(key, fallback string) string {
@@ -57,6 +61,17 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println(version)
+		return nil
+	}
+	if len(os.Args) == 3 && os.Args[1] == "--apply-update" {
+		return runUpdateHelper(os.Args[2])
+	}
+	startup := len(os.Args) == 2 && os.Args[1] == "--startup"
+	if startup {
+		hideStartupConsole()
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -86,8 +101,33 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if background && !child {
-		return launchBackground(executable, workingDir, stateDir)
+	// Desktop/launchd startup already supplies a background session on Unix.
+	// Keep that process alive so the OS startup manager can track the service.
+	if startup && runtime.GOOS != "windows" {
+		file, err := os.OpenFile(filepath.Join(stateDir, "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		os.Stdout, os.Stderr = file, file
+		log.SetOutput(file)
+		child = true
+	}
+	startOnLogin, err := boolSetting("START_ON_LOGIN", true)
+	if err != nil {
+		return err
+	}
+	if !temporaryExecutable(executable) {
+		if err := syncAutostart(executable, configDir, stateDir, startOnLogin); err != nil {
+			log.Printf("Login startup registration: %v", err)
+		}
+	}
+	updateConfig, err := newUpdater(executable, stateDir, configDir, address, token)
+	if err != nil {
+		return err
+	}
+	if (background || startup) && !child {
+		return launchBackground(executable, configDir, stateDir, !startup)
 	}
 	instance, locked, err := tryInstanceLock(stateDir)
 	if err != nil {
@@ -167,8 +207,12 @@ func run() error {
 	workers.Add(2)
 	go func() { defer workers.Done(); a.connect(ctx, client) }()
 	go func() { defer workers.Done(); a.work(ctx) }()
+	updates := make(chan struct{}, 1)
+	workers.Add(1)
+	go func() { defer workers.Done(); a.watchUpdates(ctx, updateConfig, updates) }()
 	select {
 	case <-ctx.Done():
+	case <-updates:
 	case err = <-serverErrors:
 		stop()
 	}

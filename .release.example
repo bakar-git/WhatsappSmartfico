@@ -1,0 +1,13 @@
+{
+  "version": "0.3.0",
+  "assets": {
+    "windows-amd64": {
+      "link": "https://github.com/bakar-git/WhatsappSmartfico/releases/download/v0.3.0/win-amd64.zip",
+      "sha256": "REPLACE_WITH_THE_SHA256_OF_THE_ZIP"
+    },
+    "linux-amd64": {
+      "link": "https://github.com/bakar-git/WhatsappSmartfico/releases/download/v0.3.0/linux-amd64.zip",
+      "sha256": "REPLACE_WITH_THE_SHA256_OF_THE_ZIP"
+    }
+  }
+}
